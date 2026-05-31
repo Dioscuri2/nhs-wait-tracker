@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.local
+.env.production
+*.log
+.DS_Store
+dist/
+.next/
+__pycache__/
+*.pyc
+wait_times.json

@@ -1,0 +1,136 @@
+name: Scrape NHS wait times
+
+# Refreshes scraper/wait_times.json from My Planned Care. shorterwait.org syncs
+# from that file, so this is the upstream end of the pipeline that feeds every
+# wait figure on the site.
+#
+# WHY THIS DID NOT EXIST BEFORE, AND WHAT IT NEEDS
+#
+# The scraper talks to fastCRW + Lightpanda, which it expects at
+# http://127.0.0.1:3000. A GitHub-hosted runner has nothing there, so this
+# workflow cannot work until fastCRW is reachable from wherever it runs. Three
+# ways to get there, in order of least work:
+#
+#   1. Point FASTCRW_ENDPOINT at a hosted fastCRW instance. Set the secret and
+#      this workflow runs as-is on a GitHub runner.
+#   2. Use a self-hosted runner on the machine that already runs fastCRW, and
+#      change `runs-on` below to that runner's label. The localhost default
+#      then works untouched.
+#   3. Add fastCRW as a service container, if a published image exists.
+#
+# Until one of those is in place the job fails on the first step with a clear
+# message, rather than half-scraping and committing a file of nulls.
+#
+# Required secrets:
+#   FASTCRW_API_KEY   the scraper's fastCRW bearer token
+# Optional variables:
+#   FASTCRW_ENDPOINT  defaults to http://127.0.0.1:3000
+
+on:
+  schedule:
+    # Monthly, on the 2nd at 03:00 UTC. Trusts update My Planned Care on
+    # roughly a monthly cycle, so a nightly run would spend ~500 page fetches
+    # to rediscover the same figures.
+    - cron: '0 3 2 * *'
+  workflow_dispatch:
+
+concurrency:
+  # Two overlapping runs would both scrape ~500 pages and race to commit the
+  # same file. Queue rather than cancel: a cancelled run leaves a half-written
+  # scrape behind.
+  group: scrape-wait-times
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    # ~496 hospitals at a 2.5s delay is 21 minutes of waiting before any
+    # fetch time, so the default 6h is far too loose to catch a hang.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the scraper can reach fastCRW
+        env:
+          FASTCRW_API_KEY: ${{ secrets.FASTCRW_API_KEY }}
+          FASTCRW_ENDPOINT: ${{ vars.FASTCRW_ENDPOINT }}
+        run: |
+          if [ -z "$FASTCRW_API_KEY" ]; then
+            echo "::error title=Missing secret::FASTCRW_API_KEY is not set. See the comment at the top of this workflow." >&2
+            exit 1
+          fi
+          ENDPOINT="${FASTCRW_ENDPOINT:-http://127.0.0.1:3000}"
+          echo "Endpoint: $ENDPOINT"
+          if ! curl -fsS --max-time 15 -o /dev/null "$ENDPOINT" 2>/dev/null; then
+            echo "::error title=fastCRW unreachable::Nothing answered at $ENDPOINT. A GitHub-hosted runner has no local fastCRW; see the comment at the top of this workflow for the three ways to fix this." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r scraper/requirements.txt
+
+      - name: Scrape
+        env:
+          FASTCRW_API_KEY: ${{ secrets.FASTCRW_API_KEY }}
+          FASTCRW_ENDPOINT: ${{ vars.FASTCRW_ENDPOINT }}
+        run: python scraper/scraper.py --output scraper/wait_times.new.json
+
+      - name: Refuse to publish a worse scrape than the one we have
+        run: |
+          # The guard, not a formality: My Planned Care sits behind Cloudflare,
+          # and a block yields pages that parse cleanly and contain nothing.
+          # Publishing that would null every wait figure on the live site
+          # without erroring anywhere.
+          python scraper/validate_scrape.py \
+            --new scraper/wait_times.new.json \
+            --current scraper/wait_times.json
+
+      - name: Commit, only if something actually changed
+        id: commit
+        run: |
+          mv scraper/wait_times.new.json scraper/wait_times.json
+          if git diff --quiet -- scraper/wait_times.json; then
+            echo "No change in the published figures; nothing to commit."
+            echo "changed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          RECORDS=$(python -c "import json;print(json.load(open('scraper/wait_times.json'))['total_records'])")
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scraper/wait_times.json
+          # Built with printf rather than an indented string literal, so the
+          # YAML indentation does not end up inside the commit message.
+          printf '%s\n\n%s\n' \
+            "Refresh NHS wait times: ${RECORDS} records" \
+            "Scraped from myplannedcare.nhs.uk. Crown Copyright, NHS England, used under Open Government Licence v3.0." \
+            > /tmp/commitmsg
+          git commit -F /tmp/commitmsg
+          git push
+          echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Clean up a rejected scrape
+        if: failure()
+        run: rm -f scraper/wait_times.new.json
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### NHS wait times scrape"
+            echo
+            if [ "${{ steps.commit.outputs.changed }}" = "true" ]; then
+              echo "New figures committed. shorterwait.org picks them up on its next sync."
+            elif [ "${{ steps.commit.outputs.changed }}" = "false" ]; then
+              echo "Scrape succeeded and matched the published file. Nothing committed."
+            else
+              echo "Did not publish. The existing figures are untouched — see the log above."
+            fi
+          } >> $GITHUB_STEP_SUMMARY

@@ -17,7 +17,7 @@ Built by a practising NHS GP. Helps patients exercise their legal right to choos
 |---|---|
 | Frontend | React + Tailwind CSS (scaffolded via Lovable) |
 | Backend/DB | Supabase (your own account — connect in Lovable settings) |
-| Scraper | Python + fastCRW + Lightpanda (local Docker) |
+| Scraper | Python + fastCRW + Lightpanda (see **Scraping** below) |
 | Email alerts | Resend |
 | Billing | Stripe |
 
@@ -25,11 +25,61 @@ Built by a practising NHS GP. Helps patients exercise their legal right to choos
 
 Source: `myplannedcare.nhs.uk` — public NHS planned care wait time data.
 Licence: Open Government Licence v3.0 (Crown Copyright, NHS England).
-Updated weekly. No patient data stored.
+No patient data stored.
 
 - 496 hospitals across 7 NHS regions
-- 3,900+ specialty wait time records per weekly scrape
-- Refreshed every Monday after NHS publishes weekly update
+- ~3,900 specialty wait time records per scrape
+- Trusts update My Planned Care on roughly a monthly cycle, so the scheduled
+  scrape runs monthly. **Nothing here promises a refresh cadence to patients:**
+  each record carries the trust's own `last_updated` date and the site displays
+  it. The site previously claimed "updated weekly" on eight pages while serving
+  figures published on 29 May 2026, which a patient disproved by bringing in an
+  appointment letter.
+
+### Two wait figures, and they are not interchangeable
+
+My Planned Care publishes two numbers per specialty and the scraper collects
+both. They measure different stages and must never be substituted for one
+another:
+
+| field | measures |
+|---|---|
+| `outpatient_avg` / `outpatient_8in10` | referral → first appointment |
+| `treatment_avg` / `treatment_8in10` | decision to operate → the operation |
+
+Showing the second where a patient asked about the first told a GP that a
+hiatus hernia repair at King's Lynn was a 10-week wait while his patient held
+a 50-week appointment letter. Either may be `null` where a trust does not
+publish it; `null` means "not published", never "short".
+
+## Scraping
+
+```bash
+export FASTCRW_API_KEY=...                     # required
+export FASTCRW_ENDPOINT=http://127.0.0.1:3000  # optional, this is the default
+python scraper/scraper.py --output scraper/wait_times.json
+```
+
+The scraper needs **fastCRW + Lightpanda** reachable at `FASTCRW_ENDPOINT`,
+because My Planned Care sits behind Cloudflare and plain requests are blocked.
+
+`.github/workflows/scrape-wait-times.yml` runs this monthly. A GitHub-hosted
+runner has no local fastCRW, so until `FASTCRW_ENDPOINT` points somewhere
+reachable — a hosted instance, or a self-hosted runner on the machine already
+running fastCRW — the job stops at its first step with that message rather
+than half-scraping.
+
+Every run is checked by `scraper/validate_scrape.py` before anything is
+committed. A Cloudflare block returns pages that parse cleanly and contain
+nothing, so a "successful" scrape can null every figure on the live site
+without erroring. The guard rejects a scrape that loses more than 20% of its
+records or hospitals, errors on more than 10% of pages, or leaves more than
+35% of records with no figures at all — and the existing data stays put.
+
+> **Rotate the fastCRW key.** It was committed as a literal in
+> `scraper/scraper.py` in this public repository on 31 May 2026 and sat there
+> until it was moved to the environment. It is still in the git history, so
+> treat it as compromised and issue a new one.
 
 ## Supabase setup
 

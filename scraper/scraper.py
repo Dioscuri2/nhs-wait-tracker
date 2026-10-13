@@ -8,7 +8,9 @@ Data licence: Open Government Licence v3.0
 Source: Crown Copyright, NHS England
 """
 
+import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -16,10 +18,13 @@ import re
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 
-FASTCRW_ENDPOINT = "http://127.0.0.1:3000"
-FASTCRW_API_KEY  = "fc-key-trolley-roast-secret-123"
+# Both read from the environment so this can run somewhere other than the
+# laptop it was written on. The key used to be a literal in this file, in a
+# public repository - see README. Defaults keep the original local behaviour.
+FASTCRW_ENDPOINT = os.environ.get("FASTCRW_ENDPOINT", "http://127.0.0.1:3000")
+FASTCRW_API_KEY  = os.environ.get("FASTCRW_API_KEY", "")
 INDEX_URL        = "https://www.myplannedcare.nhs.uk/find-my-hospital/"
-OUTPUT_FILE      = "wait_times.json"
+DEFAULT_OUTPUT   = "wait_times.json"
 DELAY_SECONDS    = 2.5
 
 
@@ -100,7 +105,14 @@ def parse_specialties(soup: BeautifulSoup) -> list[dict]:
     return records
 
 
-def run():
+def run(output_file: str = DEFAULT_OUTPUT):
+    if not FASTCRW_API_KEY:
+        sys.exit(
+            "FASTCRW_API_KEY is not set. Refusing to start: without it every "
+            "request is rejected and the run would write a file of nulls over "
+            "good data."
+        )
+    print(f"[Phase 0] fastCRW endpoint: {FASTCRW_ENDPOINT}", flush=True)
     print("[Phase 1] Fetching hospital index...", flush=True)
     hospital_urls = extract_hospital_urls(scrape_page(INDEX_URL))
     print(f"[Phase 1] Found {len(hospital_urls)} hospital URLs", flush=True)
@@ -131,12 +143,19 @@ def run():
     output = {"scraped_at": datetime.now(timezone.utc).isoformat(),
               "total_records": len(all_records), "total_errors": len(errors),
               "errors": errors, "records": all_records}
-    with open(OUTPUT_FILE, "w") as f:
+    with open(output_file, "w") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
-    print(f"\n[Done] {len(all_records)} records → {OUTPUT_FILE}", flush=True)
+    print(f"\n[Done] {len(all_records)} records → {output_file}", flush=True)
     if errors:
         print(f"[Errors] {len(errors)} failures — see errors key in output", flush=True)
 
 
 if __name__ == "__main__":
-    run()
+    ap = argparse.ArgumentParser(description="Scrape My Planned Care waiting times.")
+    ap.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT,
+        help="Where to write the JSON. Given explicitly so a scheduled run can "
+             "write beside the committed file regardless of working directory.",
+    )
+    run(ap.parse_args().output)

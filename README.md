@@ -54,20 +54,33 @@ publish it; `null` means "not published", never "short".
 
 ## Scraping
 
+This is a **terminal job**, run from the machine where fastCRW lives. There is
+no schedule, and that is deliberate — see below.
+
 ```bash
 export FASTCRW_API_KEY=...                     # required
 export FASTCRW_ENDPOINT=http://127.0.0.1:3000  # optional, this is the default
-python scraper/scraper.py --output scraper/wait_times.json
+
+./scraper/run-local.sh --check   # is fastCRW alive? seconds, no scrape
+./scraper/run-local.sh           # scrape, validate, stage the result
 ```
+
+`--check` answers "is this still working?" without committing to 25 minutes.
+The full run scrapes ~496 hospitals at a 2.5s delay, checks the result against
+the published file, and stages it. **It does not commit** — that is yours to
+decide, and the script prints the commands.
 
 The scraper needs **fastCRW + Lightpanda** reachable at `FASTCRW_ENDPOINT`,
 because My Planned Care sits behind Cloudflare and plain requests are blocked.
 
-`.github/workflows/scrape-wait-times.yml` runs this monthly. A GitHub-hosted
-runner has no local fastCRW, so until `FASTCRW_ENDPOINT` points somewhere
-reachable — a hosted instance, or a self-hosted runner on the machine already
-running fastCRW — the job stops at its first step with that message rather
-than half-scraping.
+### Why there is no cron
+
+A GitHub-hosted runner has nothing at `127.0.0.1:3000`, so a schedule would
+fire, fail, and send a failure email every time. That is why
+`.github/workflows/scrape-wait-times.yml` is `workflow_dispatch` only. It is
+kept for the day fastCRW is reachable from CI — a hosted endpoint in
+`FASTCRW_ENDPOINT`, or a self-hosted runner on the fastCRW machine with
+`runs-on` changed to its label. Add `schedule:` back then, and not before.
 
 Every run is checked by `scraper/validate_scrape.py` before anything is
 committed. A Cloudflare block returns pages that parse cleanly and contain

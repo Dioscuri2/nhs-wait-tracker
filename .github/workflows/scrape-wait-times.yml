@@ -4,22 +4,22 @@ name: Scrape NHS wait times
 # from that file, so this is the upstream end of the pipeline that feeds every
 # wait figure on the site.
 #
-# WHY THIS DID NOT EXIST BEFORE, AND WHAT IT NEEDS
+# THERE IS NO SCHEDULE HERE, ON PURPOSE
 #
-# The scraper talks to fastCRW + Lightpanda, which it expects at
-# http://127.0.0.1:3000. A GitHub-hosted runner has nothing there, so this
-# workflow cannot work until fastCRW is reachable from wherever it runs. Three
-# ways to get there, in order of least work:
+# The scraper needs fastCRW + Lightpanda, because My Planned Care sits behind
+# Cloudflare and plain requests are blocked. That stack runs on a local
+# machine, and a GitHub-hosted runner has nothing at 127.0.0.1:3000 - so a
+# cron here would fire monthly, fail, and send a failure email every time. The
+# repository already had enough of those.
 #
-#   1. Point FASTCRW_ENDPOINT at a hosted fastCRW instance. Set the secret and
-#      this workflow runs as-is on a GitHub runner.
-#   2. Use a self-hosted runner on the machine that already runs fastCRW, and
-#      change `runs-on` below to that runner's label. The localhost default
-#      then works untouched.
-#   3. Add fastCRW as a service container, if a published image exists.
+# So the scrape is a terminal job: scraper/run-local.sh, on the machine running
+# fastCRW. This workflow is kept for the day fastCRW is reachable from CI -
+# either a hosted endpoint in FASTCRW_ENDPOINT, or a self-hosted runner on the
+# fastCRW machine with `runs-on` changed to its label. Add `schedule:` back
+# then, and not before.
 #
-# Until one of those is in place the job fails on the first step with a clear
-# message, rather than half-scraping and committing a file of nulls.
+# Until then it only runs when someone presses the button, and the first step
+# says plainly why it stopped rather than half-scraping and committing nulls.
 #
 # Required secrets:
 #   FASTCRW_API_KEY   the scraper's fastCRW bearer token
@@ -27,11 +27,6 @@ name: Scrape NHS wait times
 #   FASTCRW_ENDPOINT  defaults to http://127.0.0.1:3000
 
 on:
-  schedule:
-    # Monthly, on the 2nd at 03:00 UTC. Trusts update My Planned Care on
-    # roughly a monthly cycle, so a nightly run would spend ~500 page fetches
-    # to rediscover the same figures.
-    - cron: '0 3 2 * *'
   workflow_dispatch:
 
 concurrency:
